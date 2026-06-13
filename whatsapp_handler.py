@@ -18,6 +18,15 @@ TWILIO_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN', '')
 TWILIO_WHATSAPP_NUMBER = os.environ.get('TWILIO_WHATSAPP_NUMBER', '')
 APP_URL = os.environ.get('APP_URL', 'http://localhost:5000')
 
+# מיפוי מצבים ל-"מצב הקודם" + שאלה לחזרה
+_BACK_MAP = {
+    'receipt_description': ('receipt_client',    '👤 מה שם הלקוח?'),
+    'receipt_amount':      ('receipt_description','💼 מה השירות שניתן?\n(לדוגמה: "טיפול פנים מלא")'),
+    'expense_amount':      ('expense_description','📝 מה ההוצאה?'),
+    'expense_category':    ('expense_amount',     '💰 כמה עלה? (בש"ח)'),
+    'doc_items':           ('doc_client',         '👤 לאיזה לקוח?'),
+}
+
 
 class WhatsAppHandler:
 
@@ -43,7 +52,7 @@ class WhatsAppHandler:
 
         msg = message.strip()
 
-        # פקודות מהירות (עובדות בכל מצב)
+        # ─── פקודות מהירות (עובדות בכל מצב) ──────────
         if msg in ['ביטול', 'cancel', '❌']:
             models.clear_state(sender)
             return '✅ הפעולה בוטלה. מה תרצה לעשות?\n\n' + self._menu()
@@ -52,13 +61,30 @@ class WhatsAppHandler:
             models.clear_state(sender)
             return self._menu()
 
-        # ניהול מצבי שיחה
+        # איפוס שיחה
+        if msg in ['איפוס', 'reset', '🔄', '0']:
+            models.clear_state(sender)
+            return '🔄 *השיחה אופסה.*\n\n' + self._menu()
+
+        # חזרה שלב אחד
+        if msg in ['חזור', 'back', '⬅️']:
+            return self._handle_back(sender, state, data)
+
+        # תיקון הרישום האחרון
+        if msg in ['תיקון', 'עדכן', '✏️']:
+            return self._handle_edit_last(sender)
+
+        # ─── ניהול מצבי שיחה ────────────────────────────
+
+        # קבלה
         if state == 'receipt_client':
             return self._receipt_got_client(sender, msg, data)
         if state == 'receipt_description':
             return self._receipt_got_description(sender, msg, data)
         if state == 'receipt_amount':
             return self._receipt_got_amount(sender, msg, data)
+
+        # הוצאה
         if state == 'expense_description':
             return self._expense_got_description(sender, msg, data)
         if state == 'expense_amount':
@@ -66,7 +92,29 @@ class WhatsAppHandler:
         if state == 'expense_category':
             return self._expense_got_category(sender, msg, data)
 
-        # פקודות מספריות מהתפריט
+        # מסמכים
+        if state == 'doc_client':
+            return self._doc_got_client(sender, msg, data)
+        if state == 'doc_items':
+            return self._doc_got_items(sender, msg, data)
+        if state == 'doc_notes':
+            return self._doc_got_notes(sender, msg, data)
+
+        # קטלוג
+        if state == 'catalog_add_name':
+            return self._catalog_got_name(sender, msg, data)
+        if state == 'catalog_add_price':
+            return self._catalog_got_price(sender, msg, data)
+        if state == 'catalog_edit':
+            return self._catalog_got_edit(sender, msg, data)
+
+        # תיקון קבלה
+        if state == 'edit_last':
+            return self._edit_got_field(sender, msg, data)
+        if state == 'edit_field_value':
+            return self._edit_got_value(sender, msg, data)
+
+        # ─── פקודות מספריות מהתפריט ─────────────────────
         if msg == '1':
             return self._start_receipt(sender)
         if msg == '2':
@@ -88,29 +136,14 @@ class WhatsAppHandler:
         if msg == '10':
             return self._start_payment_request(sender)
 
-        # מצבי שיחה למסמכים
-        if state == 'doc_client':
-            return self._doc_got_client(sender, msg, data)
-        if state == 'doc_items':
-            return self._doc_got_items(sender, msg, data)
-        if state == 'doc_notes':
-            return self._doc_got_notes(sender, msg, data)
-        if state == 'catalog_add_name':
-            return self._catalog_got_name(sender, msg, data)
-        if state == 'catalog_add_price':
-            return self._catalog_got_price(sender, msg, data)
-        if state == 'catalog_edit':
-            return self._catalog_got_edit(sender, msg, data)
-
         # פקודות קטלוג מהירות
-        catalog_response = self._handle_catalog_command(phone, msg)
+        catalog_response = self._handle_catalog_command(sender, msg)
         if catalog_response:
             return catalog_response
 
         # ניסיון להבין כוונה חופשית
         intent = ai_processor.understand_intent(msg)
         if intent == 'new_receipt':
-            # נסה לנתח ישירות
             parsed = ai_processor.parse_receipt_command(msg)
             if parsed.get('client_name') and parsed.get('amount') and parsed.get('description'):
                 return self._create_receipt_direct(sender, parsed)
@@ -132,7 +165,7 @@ class WhatsAppHandler:
             return self._menu()
 
         # ברירת מחדל
-        return f'שלום! 👋\n\n' + self._menu()
+        return 'שלום! 👋\n\n' + self._menu()
 
     # ─── הגדרת עסק ─────────────────────────────────────
 
@@ -172,7 +205,6 @@ class WhatsAppHandler:
         if state == 'setup_email':
             if message.lower() not in ('דלג', 'skip', '-'):
                 data['email'] = message
-            # שמור הכל
             for key, val in data.items():
                 models.set_business_info(key, val)
             models.clear_state(phone)
@@ -202,15 +234,19 @@ class WhatsAppHandler:
             '9️⃣ הצעת מחיר\n'
             '🔟 דרישת תשלום\n\n'
             '📸 *שלח תמונה של קבלה להוצאה אוטומטית*\n'
-            '💬 *אפשר גם לכתוב בחופשי, למשל:*\n'
-            '"קבלה לדנה לוי על טיפול פנים 450 ש"ח"'
+            '💬 *אפשר גם לכתוב בחופשי:* "קבלה לדנה לוי על טיפול פנים 450 ש"ח"\n\n'
+            '─────────────────\n'
+            '🔄 *איפוס* — מאפס את השיחה\n'
+            '✏️ *תיקון* — עורך את הרישום האחרון\n'
+            '⬅️ *חזור* — חוזר שלב אחד אחורה\n'
+            '❌ *ביטול* — מבטל פעולה נוכחית'
         )
 
     # ─── קבלה ─────────────────────────────────────────
 
     def _start_receipt(self, phone: str) -> str:
         models.set_state(phone, 'receipt_client', {})
-        return '🧾 *הוצאת קבלה*\n\n👤 מה שם הלקוח?'
+        return '🧾 *הוצאת קבלה*\n\n👤 מה שם הלקוח?\n\n_שלח "ביטול" לביטול_'
 
     def _receipt_got_client(self, phone: str, msg: str, data: dict) -> str:
         data['client_name'] = msg
@@ -243,7 +279,6 @@ class WhatsAppHandler:
                 date=data.get('date', datetime.now().strftime('%Y-%m-%d'))
             )
 
-            # יצירת PDF
             pdf_path = receipt_generator.generate_receipt(
                 receipt_number=record['receipt_number'],
                 date=record['date'],
@@ -253,14 +288,12 @@ class WhatsAppHandler:
                 business_info=business_info
             )
 
-            # עדכן נתיב PDF
             conn = models.get_conn()
             conn.execute('UPDATE income SET pdf_path = ? WHERE id = ?',
                          (pdf_path, record['id']))
             conn.commit()
             conn.close()
 
-            # המר ל-PNG ושלח תמונה להעברה ללקוח
             try:
                 img_path = receipt_generator.pdf_to_image(pdf_path)
                 img_url = f'{APP_URL}/receipts/{os.path.basename(img_path)}'
@@ -271,7 +304,6 @@ class WhatsAppHandler:
             except Exception as img_err:
                 print(f'[IMG] שגיאה בהמרה לתמונה: {img_err}')
 
-            # שלח גם PDF לארכיון
             pdf_url = f'{APP_URL}/receipts/{os.path.basename(pdf_path)}'
             self._send_media(
                 phone, pdf_url,
@@ -286,7 +318,8 @@ class WhatsAppHandler:
                 f'💰 סכום: ₪{record["amount"]:,.0f}\n'
                 f'📅 תאריך: {_fmt_date(record["date"])}\n\n'
                 f'📸 תמונה — העבר ישירות ללקוח\n'
-                f'📄 PDF — שמור לארכיון'
+                f'📄 PDF — שמור לארכיון\n\n'
+                f'_שלח "תיקון" אם יש טעות_'
             )
         except Exception as e:
             return f'❌ שגיאה ביצירת קבלה: {str(e)}'
@@ -326,7 +359,6 @@ class WhatsAppHandler:
             if 0 <= idx < len(cats):
                 category = cats[idx]
         else:
-            # חיפוש לפי שם
             for c in cats:
                 if msg in c or c in msg:
                     category = c
@@ -379,7 +411,6 @@ class WhatsAppHandler:
         conf_emoji = {'high': '✅', 'medium': '⚠️', 'low': '❓'}.get(confidence, '⚠️')
 
         if not amount:
-            # שאל על הסכום
             models.set_state(phone, 'expense_amount', {
                 'description': desc,
                 'category': category,
@@ -393,7 +424,6 @@ class WhatsAppHandler:
                 f'❓ לא הצלחתי לקרוא את הסכום.\n*כמה עלה?* (בש"ח)'
             )
 
-        # רשום אוטומטית
         record = models.add_expense(
             description=desc,
             amount=float(amount),
@@ -414,12 +444,10 @@ class WhatsAppHandler:
 
     def _show_summary(self, phone: str) -> str:
         year = datetime.now().year
-        month = datetime.now().month
         inc = models.get_income_summary(year=year)
         exp = models.get_expense_summary(year=year)
         profit = inc['total'] - exp['total']
 
-        # רף עוסק פטור 2024
         EXEMPT_THRESHOLD = 120_000
         threshold_pct = (inc['total'] / EXEMPT_THRESHOLD * 100) if inc['total'] else 0
 
@@ -485,13 +513,13 @@ class WhatsAppHandler:
         year = today.year
 
         reminders = [
-            ('31/01', f'דו"ח מקדמות מע"מ - ינואר-פברואר'),
-            ('31/03', f'דו"ח מקדמות מע"מ - ינואר-פברואר (הגשה מאוחרת)'),
+            ('31/01', 'דו"ח מקדמות מע"מ - ינואר-פברואר'),
+            ('31/03', 'דו"ח מקדמות מע"מ - ינואר-פברואר (הגשה מאוחרת)'),
             ('30/04', f'📌 דו"ח שנתי לרשות המסים ({year-1})'),
-            ('31/05', f'דו"ח מקדמות מע"מ - מרץ-אפריל'),
-            ('31/07', f'דו"ח מקדמות מע"מ - מאי-יוני'),
-            ('30/09', f'דו"ח מקדמות מע"מ - יולי-אוגוסט'),
-            ('30/11', f'דו"ח מקדמות מע"מ - ספטמבר-אוקטובר'),
+            ('31/05', 'דו"ח מקדמות מע"מ - מרץ-אפריל'),
+            ('31/07', 'דו"ח מקדמות מע"מ - מאי-יוני'),
+            ('30/09', 'דו"ח מקדמות מע"מ - יולי-אוגוסט'),
+            ('30/11', 'דו"ח מקדמות מע"מ - ספטמבר-אוקטובר'),
         ]
 
         return (
@@ -570,12 +598,9 @@ class WhatsAppHandler:
 
     def _handle_catalog_command(self, phone: str, msg: str) -> str | None:
         """מטפל בפקודות קטלוג מהירות: הוסף שירות, ערוך, מחק."""
-        lower = msg.lower()
 
-        # הוסף שירות: [שם] [מחיר]
         if msg.startswith('הוסף שירות:') or msg.startswith('הוסף שירות '):
             rest = msg.replace('הוסף שירות:', '').replace('הוסף שירות', '').strip()
-            # נסה לחלץ שם ומחיר
             parts = rest.rsplit(' ', 1)
             if len(parts) == 2:
                 name = parts[0].strip()
@@ -583,10 +608,8 @@ class WhatsAppHandler:
                 if name and price:
                     service = models.add_service(name, price)
                     return f'✅ *{service["name"]}* נוסף בקטלוג — ₪{service["price"]:,.0f}'
-            # אם לא הצלחנו לחלץ, פתח שיחה
             return self._start_add_service(phone)
 
-        # ערוך [מספר] [מחיר]
         if msg.startswith('ערוך '):
             parts = msg.split()
             if len(parts) >= 3:
@@ -598,10 +621,11 @@ class WhatsAppHandler:
                         return f'✅ מחיר עודכן ל-₪{price:,.0f}'
                 except Exception:
                     pass
-            models.set_state(phone, 'catalog_edit', {'service_id': int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0})
+            models.set_state(phone, 'catalog_edit', {
+                'service_id': int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+            })
             return '💰 מה המחיר החדש?'
 
-        # מחק [מספר]
         if msg.startswith('מחק ') and msg.split()[1].isdigit():
             sid = int(msg.split()[1])
             svc = models.get_service(sid)
@@ -612,7 +636,7 @@ class WhatsAppHandler:
 
         return None
 
-    # ─── הצעת מחיר ─────────────────────────────────────
+    # ─── הצעת מחיר / דרישת תשלום ────────────────────────
 
     def _start_quote(self, phone: str) -> str:
         return self._start_document(phone, 'quote')
@@ -625,7 +649,6 @@ class WhatsAppHandler:
             'quote': 'הצעת מחיר',
             'payment_request': 'דרישת תשלום'
         }
-        services = models.get_services()
         models.set_state(phone, 'doc_client', {'doc_type': doc_type})
         return f'📄 *{doc_names[doc_type]}*\n\n👤 לאיזה לקוח?'
 
@@ -676,7 +699,6 @@ class WhatsAppHandler:
         svc_map = {str(s['id']): s for s in services}
         added = []
 
-        # מספרים מופרדים בפסיק: "1, 2, 3"
         parts = [p.strip() for p in msg.replace('،', ',').split(',')]
         for part in parts:
             if part in svc_map:
@@ -689,7 +711,6 @@ class WhatsAppHandler:
                 })
                 added.append(s['name'])
             else:
-                # ניסיון לחלץ "שירות מיוחד 350"
                 words = part.rsplit(' ', 1)
                 if len(words) == 2:
                     price = _parse_amount(words[1])
@@ -727,7 +748,6 @@ class WhatsAppHandler:
             from datetime import timedelta
             business_info = models.get_all_business_info()
 
-            # תוקף להצעת מחיר: 30 יום
             valid_until = ''
             if doc_type == 'quote':
                 from datetime import date
@@ -753,7 +773,6 @@ class WhatsAppHandler:
                 valid_until=valid_until
             )
 
-            # המר לתמונה + שלח שניהם
             try:
                 img_path = document_generator.pdf_to_image(pdf_path)
                 img_url = f'{APP_URL}/documents/{os.path.basename(img_path)}'
@@ -779,6 +798,135 @@ class WhatsAppHandler:
             )
         except Exception as e:
             return f'❌ שגיאה ביצירת המסמך: {str(e)}'
+
+    # ─── חזרה שלב אחד ──────────────────────────────────
+
+    def _handle_back(self, phone: str, state: str, data: dict) -> str:
+        """חוזר שלב אחד אחורה בכל זרימת שיחה."""
+        if state in _BACK_MAP:
+            prev_state, prompt = _BACK_MAP[state]
+            # מנקה את השדה שהוזן בשלב הנוכחי
+            fields_to_clear = {
+                'receipt_description': 'client_name',
+                'receipt_amount': 'description',
+                'expense_amount': 'description',
+                'expense_category': 'amount',
+                'doc_items': 'client_name',
+            }
+            field = fields_to_clear.get(state)
+            if field:
+                data.pop(field, None)
+            models.set_state(phone, prev_state, data)
+            if state == 'doc_items':
+                return f'⬅️ חזרנו שלב אחד.\n\n{prompt}'
+            return f'⬅️ חזרנו שלב אחד.\n\n{prompt}'
+
+        if state == 'idle':
+            return self._menu()
+
+        # כל מצב אחר — חזור לתפריט
+        models.clear_state(phone)
+        return '⬅️ חזרנו להתחלה.\n\n' + self._menu()
+
+    # ─── תיקון רישום אחרון ─────────────────────────────
+
+    def _handle_edit_last(self, phone: str) -> str:
+        """מציג את הקבלה האחרונה לעריכה."""
+        record = models.get_last_income()
+        if not record:
+            return '❗ לא נמצאו קבלות לתיקון.\n\nשלח "תפריט" להתחלה.'
+
+        models.set_state(phone, 'edit_last', {'edit_id': record['id']})
+        return (
+            f'✏️ *תיקון קבלה אחרונה*\n\n'
+            f'🔖 {record["receipt_number"]}\n'
+            f'👤 לקוח: {record["client_name"]}\n'
+            f'💼 שירות: {record["description"]}\n'
+            f'💰 סכום: ₪{record["amount"]:,.0f}\n'
+            f'📅 תאריך: {_fmt_date(record["date"])}\n\n'
+            f'*מה לתקן?*\n'
+            f'1. שם לקוח\n'
+            f'2. תיאור שירות\n'
+            f'3. סכום\n\n'
+            f'שלח "ביטול" לחזרה'
+        )
+
+    def _edit_got_field(self, phone: str, msg: str, data: dict) -> str:
+        """מקבל את בחירת השדה לתיקון."""
+        field_map = {
+            '1': 'client_name', 'לקוח': 'client_name', 'שם': 'client_name',
+            '2': 'description',  'שירות': 'description', 'תיאור': 'description',
+            '3': 'amount',       'סכום': 'amount',       'מחיר': 'amount',
+        }
+        field = field_map.get(msg.strip())
+        if not field:
+            return '❗ שלח 1, 2, או 3 לבחירת השדה לתיקון.'
+
+        data['edit_field'] = field
+        models.set_state(phone, 'edit_field_value', data)
+
+        prompts = {
+            'client_name': '👤 שם הלקוח החדש?',
+            'description': '💼 תיאור השירות החדש?',
+            'amount':      '💰 הסכום החדש? (בש"ח)',
+        }
+        return prompts[field]
+
+    def _edit_got_value(self, phone: str, msg: str, data: dict) -> str:
+        """מחיל את התיקון ומפיק קבלה מחדש."""
+        field = data['edit_field']
+        edit_id = data['edit_id']
+
+        if field == 'amount':
+            value = _parse_amount(msg)
+            if value is None:
+                return '❗ סכום לא תקין. נסה שוב (לדוגמה: 450)'
+        else:
+            value = msg.strip()
+            if not value:
+                return '❗ ערך ריק. נסה שוב.'
+
+        models.update_income_field(edit_id, field, value)
+        models.clear_state(phone)
+
+        # הפקת קבלה מחדש
+        record = models.get_income_by_id(edit_id)
+        business_info = models.get_all_business_info()
+        try:
+            pdf_path = receipt_generator.generate_receipt(
+                receipt_number=record['receipt_number'],
+                date=record['date'],
+                client_name=record['client_name'],
+                description=record['description'],
+                amount=record['amount'],
+                business_info=business_info
+            )
+            models.update_income_field(edit_id, 'pdf_path', pdf_path)
+
+            try:
+                img_path = receipt_generator.pdf_to_image(pdf_path)
+                img_url = f'{APP_URL}/receipts/{os.path.basename(img_path)}'
+                self._send_media(phone, img_url,
+                                 f'📸 קבלה מתוקנת #{record["receipt_number"]}')
+            except Exception:
+                pass
+
+            pdf_url = f'{APP_URL}/receipts/{os.path.basename(pdf_path)}'
+            self._send_media(phone, pdf_url,
+                             f'📄 PDF מתוקן #{record["receipt_number"]}')
+
+            field_names = {'client_name': 'שם לקוח', 'description': 'תיאור שירות', 'amount': 'סכום'}
+            return (
+                f'✅ *קבלה עודכנה!*\n\n'
+                f'🔖 {record["receipt_number"]}\n'
+                f'👤 {record["client_name"]}\n'
+                f'💼 {record["description"]}\n'
+                f'💰 ₪{record["amount"]:,.0f}\n\n'
+                f'✏️ {field_names.get(field, field)} שונה.\n'
+                f'📸 קבלה מתוקנת נשלחה!'
+            )
+        except Exception as e:
+            return f'❌ שגיאה בעדכון: {str(e)}'
 
     # ─── שליחת מדיה ────────────────────────────────────
 
