@@ -174,32 +174,6 @@ def get_income_summary(year: int = None, month: int = None) -> dict:
     return {'records': [dict(r) for r in rows], 'total': total, 'count': len(rows)}
 
 
-# ─── עזרים לתיקון קבלות ────────────────────────────────
-
-def get_last_income() -> dict | None:
-    conn = get_conn()
-    row = conn.execute('SELECT * FROM income ORDER BY id DESC LIMIT 1').fetchone()
-    conn.close()
-    return dict(row) if row else None
-
-
-def get_income_by_id(income_id: int) -> dict | None:
-    conn = get_conn()
-    row = conn.execute('SELECT * FROM income WHERE id = ?', (income_id,)).fetchone()
-    conn.close()
-    return dict(row) if row else None
-
-
-def update_income_field(income_id: int, field: str, value):
-    allowed = {'client_name', 'description', 'amount', 'pdf_path', 'notes', 'date'}
-    if field not in allowed:
-        raise ValueError(f'שדה {field} לא מורשה לעדכון')
-    conn = get_conn()
-    conn.execute(f'UPDATE income SET {field} = ? WHERE id = ?', (value, income_id))
-    conn.commit()
-    conn.close()
-
-
 # ─── הוצאות ────────────────────────────────────────────
 
 def add_expense(description: str, amount: float, category: str = 'כללי',
