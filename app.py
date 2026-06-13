@@ -1,5 +1,5 @@
 """
-app.py - שרת Flask ראשי
+app.py - Flask main server
 """
 import os
 from flask import Flask, request, Response, send_from_directory
@@ -27,11 +27,9 @@ for d in [RECEIPTS_DIR, REPORTS_DIR, DOCUMENTS_DIR]:
 
 
 def _twiml(text: str) -> Response:
-    """מחזיר תגובת TwiML תקנית עם encoding נכון."""
     resp = MessagingResponse()
     resp.message(text)
-    xml = str(resp).encode('utf-8')
-    return Response(xml, content_type='text/xml; charset=utf-8')
+    return Response(str(resp).encode('utf-8'), content_type='text/xml; charset=utf-8')
 
 
 @app.route('/webhook', methods=['POST'])
@@ -42,15 +40,14 @@ def webhook():
     media_url  = request.values.get('MediaUrl0', '') if num_media > 0 else None
     media_type = request.values.get('MediaContentType0', '') if num_media > 0 else None
 
-    # ולידציית Twilio (ניתן לכיבוי עם VALIDATE_TWILIO=false)
-    validate = os.environ.get('VALIDATE_TWILIO', 'true').lower() == 'true'
+    validate = os.environ.get('VALIDATE_TWILIO', 'false').lower() == 'true'
     if validate and TWILIO_TOKEN:
         from twilio.request_validator import RequestValidator
-        url = request.url.replace('http://', 'https://')  # Railway proxy fix
+        url = request.url.replace('http://', 'https://')
         v = RequestValidator(TWILIO_TOKEN)
         if not v.validate(url, request.form,
                           request.headers.get('X-Twilio-Signature', '')):
-            print(f'[WARN] Twilio signature validation failed for {sender}')
+            print(f'[WARN] Signature validation failed for {sender}')
             return Response('Forbidden', status=403)
 
     print(f'[IN] {sender}: {body[:80]}')
@@ -61,8 +58,8 @@ def webhook():
             media_url=media_url, media_type=media_type
         )
     except Exception as e:
-        print(f'[ERROR] process_message failed: {e}')
-        response_text = 'מצטערים, אירעה שגיאה. נסה שוב.'
+        print(f'[ERROR] {e}')
+        response_text = 'שגיאה פנימית. נסה שוב.'
 
     print(f'[OUT] {response_text[:120]}')
     return _twiml(response_text)

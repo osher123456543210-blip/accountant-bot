@@ -1,6 +1,5 @@
 """
-ai_processor.py - עיבוד תמונות ושפה טבעית עם Claude AI
-מזהה הוצאות מתמונות קבלות ומעבד בקשות בשפה טבעית
+ai_processor.py - AI processing with Claude
 """
 import os
 import base64
@@ -29,23 +28,17 @@ EXPENSE_CATEGORIES = [
 
 def extract_expense_from_image(image_url: str, twilio_sid: str = None,
                                 twilio_token: str = None) -> dict:
-    """
-    מזהה פרטי הוצאה מתמונת קבלה.
-    מחזיר: {description, amount, date, category, confidence, raw_text}
-    """
     try:
-        # הורדת התמונה מ-Twilio (דורש אימות)
         if twilio_sid and twilio_token:
             response = requests.get(image_url, auth=(twilio_sid, twilio_token), timeout=15)
         else:
             response = requests.get(image_url, timeout=15)
 
         if response.status_code != 200:
-            return _error_result('לא ניתן להוריד את התמונה')
+            return _error_result('Cannot download image')
 
         image_data = base64.standard_b64encode(response.content).decode('utf-8')
         content_type = response.headers.get('Content-Type', 'image/jpeg').split(';')[0]
-
         categories_str = ', '.join(EXPENSE_CATEGORIES)
 
         result = client.messages.create(
@@ -64,39 +57,30 @@ def extract_expense_from_image(image_url: str, twilio_sid: str = None,
                     },
                     {
                         'type': 'text',
-                        'text': f"""נתח את הקבלה/חשבונית בתמונה וחלץ את הפרטים הבאים.
-ענה בפורמט JSON בלבד, ללא טקסט נוסף:
-
-{{
-  "description": "תיאור קצר של ההוצאה",
-  "amount": מספר_בשקלים,
-  "date": "YYYY-MM-DD או null אם לא ברור",
-  "vendor": "שם הספק / חנות",
-  "category": "אחת מהקטגוריות: {categories_str}",
-  "confidence": "high/medium/low",
-  "raw_text": "טקסט גולמי שזיהית בתמונה"
-}}
-
-חשוב:
-- amount הוא תמיד מספר (ללא ₪ וללא פסיקים)
-- date בפורמט YYYY-MM-DD
-- אם יש מע"מ, תן את הסכום הכולל כולל מע"מ
-- אם אינך בטוח בסכום, שים null ב-amount
-- ענה בעברית לשדות description ו-vendor"""
+                        'text': (
+                            'Analyze this receipt/invoice image and extract details. '
+                            'Reply ONLY with valid JSON, no extra text:\n\n'
+                            '{\n'
+                            '  "description": "short description of the expense in Hebrew",\n'
+                            '  "amount": number_in_shekels_or_null,\n'
+                            '  "date": "YYYY-MM-DD or null",\n'
+                            '  "vendor": "vendor/store name in Hebrew",\n'
+                            '  "category": "one of: ' + categories_str + '",\n'
+                            '  "confidence": "high/medium/low",\n'
+                            '  "raw_text": "raw text found in image"\n'
+                            '}\n\n'
+                            'Rules: amount is always a number (no currency symbols), '
+                            'include VAT in total amount, use null if unsure.'
+                        )
                     }
                 ]
             }]
         )
 
         raw = result.content[0].text.strip()
-        # נסה לחלץ JSON אם יש טקסט מיותר
         json_match = re.search(r'\{.*\}', raw, re.DOTALL)
-        if json_match:
-            data = json.loads(json_match.group())
-        else:
-            data = json.loads(raw)
+        data = json.loads(json_match.group() if json_match else raw)
 
-        # ולידציה
         if not data.get('date') or data['date'] == 'null':
             data['date'] = datetime.now().strftime('%Y-%m-%d')
         if not data.get('category'):
@@ -107,38 +91,31 @@ def extract_expense_from_image(image_url: str, twilio_sid: str = None,
         return data
 
     except json.JSONDecodeError:
-        return _error_result('לא ניתן לפענח את תשובת ה-AI')
+        return _error_result('Cannot parse AI response')
     except Exception as e:
-        return _error_result(f'שגיאה: {str(e)}')
+        return _error_result(f'Error: {str(e)}')
 
 
 def parse_receipt_command(text: str) -> dict:
-    """
-    מנתח פקודת קבלה בשפה טבעית.
-    לדוגמה: "קבלה ל-דנה לוי על טיפול פנים 450 שקל"
-    מחזיר: {client_name, description, amount, date}
-    """
-    result = client.messages.create(
-        model='claude-haiku-4-5-20251001',
-        max_tokens=300,
-        messages=[{
-            'role': 'user',
-            'content': f"""חלץ פרטי קבלה מהטקסט הבא וענה בפורמט JSON בלבד:
-
-טקסט: "{text}"
-
-{{
-  "client_name": "שם הלקוח",
-  "description": "תיאור השירות",
-  "amount": מספר_בשקלים,
-  "date": "YYYY-MM-DD או null להיום"
-}}
-
-אם חסר מידע, שים null. amount הוא מספר בלבד."""
-        }]
-    )
-
     try:
+        result = client.messages.create(
+            model='claude-haiku-4-5-20251001',
+            max_tokens=300,
+            messages=[{
+                'role': 'user',
+                'content': (
+                    'Extract receipt details from this Hebrew text and reply ONLY with JSON:\n\n'
+                    f'Text: "{text}"\n\n'
+                    '{\n'
+                    '  "client_name": "client name",\n'
+                    '  "description": "service description",\n'
+                    '  "amount": number_or_null,\n'
+                    '  "date": "YYYY-MM-DD or null for today"\n'
+                    '}\n\n'
+                    'Use null for missing fields. amount must be a number only.'
+                )
+            }]
+        )
         raw = result.content[0].text.strip()
         json_match = re.search(r'\{.*\}', raw, re.DOTALL)
         data = json.loads(json_match.group() if json_match else raw)
@@ -150,29 +127,26 @@ def parse_receipt_command(text: str) -> dict:
 
 
 def parse_expense_command(text: str) -> dict:
-    """
-    מנתח פקודת הוצאה בשפה טבעית.
-    לדוגמה: "הוצאה: קרם לטיפולים 120 שקל"
-    """
     categories_str = ', '.join(EXPENSE_CATEGORIES)
-    result = client.messages.create(
-        model='claude-haiku-4-5-20251001',
-        max_tokens=300,
-        messages=[{
-            'role': 'user',
-            'content': f"""חלץ פרטי הוצאה מהטקסט וענה JSON בלבד:
-
-טקסט: "{text}"
-
-{{
-  "description": "תיאור ההוצאה",
-  "amount": מספר_בשקלים,
-  "category": "אחת מ: {categories_str}",
-  "date": "YYYY-MM-DD או null להיום"
-}}"""
-        }]
-    )
     try:
+        result = client.messages.create(
+            model='claude-haiku-4-5-20251001',
+            max_tokens=300,
+            messages=[{
+                'role': 'user',
+                'content': (
+                    'Extract expense details from this Hebrew text and reply ONLY with JSON:\n\n'
+                    f'Text: "{text}"\n\n'
+                    '{\n'
+                    '  "description": "expense description",\n'
+                    '  "amount": number_or_null,\n'
+                    '  "category": "one of: ' + categories_str + '",\n'
+                    '  "date": "YYYY-MM-DD or null for today"\n'
+                    '}\n\n'
+                    'amount must be a number only.'
+                )
+            }]
+        )
         raw = result.content[0].text.strip()
         json_match = re.search(r'\{.*\}', raw, re.DOTALL)
         data = json.loads(json_match.group() if json_match else raw)
@@ -184,37 +158,34 @@ def parse_expense_command(text: str) -> dict:
 
 
 def understand_intent(text: str) -> str:
-    """
-    מזהה את כוונת המשתמש.
-    מחזיר: new_receipt | new_expense | summary | annual_report |
-             monthly_report | help | unknown
-    """
-    result = client.messages.create(
-        model='claude-haiku-4-5-20251001',
-        max_tokens=50,
-        system="""אתה עוזר לזיהוי כוונה. ענה במילה אחת בלבד מהרשימה:
-new_receipt - רוצה להוציא קבלה ללקוח
-new_expense - רוצה לרשום הוצאה
-summary - רוצה סיכום / סטטוס
-annual_report - רוצה דוח שנתי
-monthly_report - רוצה דוח חודשי
-help - רוצה עזרה / מה אפשר לעשות
-unknown - אחר""",
-        messages=[{'role': 'user', 'content': text}]
-    )
-    intent = result.content[0].text.strip().lower()
-    valid = {'new_receipt', 'new_expense', 'summary', 'annual_report',
-             'monthly_report', 'help', 'unknown'}
-    return intent if intent in valid else 'unknown'
+    try:
+        result = client.messages.create(
+            model='claude-haiku-4-5-20251001',
+            max_tokens=20,
+            system=(
+                'You classify user intent. Reply with ONE word only from this list:\n'
+                'new_receipt - user wants to issue a receipt to a client\n'
+                'new_expense - user wants to log an expense\n'
+                'summary - user wants income/expense summary\n'
+                'annual_report - user wants annual tax report\n'
+                'monthly_report - user wants monthly report\n'
+                'help - user wants help or menu\n'
+                'unknown - anything else'
+            ),
+            messages=[{'role': 'user', 'content': text}]
+        )
+        intent = result.content[0].text.strip().lower()
+        valid = {'new_receipt', 'new_expense', 'summary', 'annual_report',
+                 'monthly_report', 'help', 'unknown'}
+        return intent if intent in valid else 'unknown'
+    except Exception:
+        return 'unknown'
 
 
 def _error_result(msg: str) -> dict:
     return {
-        'description': None,
-        'amount': None,
+        'description': None, 'amount': None,
         'date': datetime.now().strftime('%Y-%m-%d'),
-        'vendor': None,
-        'category': 'כללי',
-        'confidence': 'low',
-        'error': msg
+        'vendor': None, 'category': 'כללי',
+        'confidence': 'low', 'error': msg
     }
