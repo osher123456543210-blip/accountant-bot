@@ -65,6 +65,13 @@ class WhatsAppHandler:
         if msg in ['תיקון', 'עדכן', '✏️']:
             return self._handle_edit_last(sender)
 
+        # ברכות - החזר תפריט מיד בלי לקרוא ל-AI (Twilio timeout = 15 שניות!)
+        _GREETINGS = {'שלום', 'היי', 'הי', 'hello', 'hi', 'hey',
+                      'בוקר טוב', 'ערב טוב', 'צהריים טובים', 'לילה טוב',
+                      'שלום!', 'היי!', 'הי!', 'yo', 'sup'}
+        if msg.lower().rstrip('!') in _GREETINGS or msg.lower() in _GREETINGS:
+            return 'שלום! 👋\n\n' + self._menu()
+
         # states
         if state == 'receipt_client':
             return self._receipt_got_client(sender, msg, data)

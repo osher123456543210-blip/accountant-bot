@@ -29,7 +29,7 @@ for d in [RECEIPTS_DIR, REPORTS_DIR, DOCUMENTS_DIR]:
 def _twiml(text: str) -> Response:
     resp = MessagingResponse()
     resp.message(text)
-    return Response(str(resp).encode('utf-8'), content_type='text/xml; charset=utf-8')
+    return Response(str(resp), content_type='text/xml; charset=utf-8')
 
 
 @app.route('/webhook', methods=['POST'])

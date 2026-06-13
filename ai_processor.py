@@ -9,7 +9,7 @@ import requests
 from datetime import datetime
 from anthropic import Anthropic
 
-client = Anthropic(api_key=os.environ.get('ANTHROPIC_API_KEY', ''))
+client = Anthropic(api_key=os.environ.get('ANTHROPIC_API_KEY', ''), timeout=12.0)
 
 EXPENSE_CATEGORIES = [
     'ציוד מקצועי',
